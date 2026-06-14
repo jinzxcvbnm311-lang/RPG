@@ -17,7 +17,25 @@ app.use(express.json());
 
 function cleanEnvValue(val: string): string {
   if (!val) return '';
-  return val.trim().replace(/^['"]|['"]$/g, '').replace(/\/$/, '').trim();
+  let cleaned = val.trim().replace(/^['"]|['"]$/g, '').trim();
+  
+  // Self-heal: Check if client pasted a DB connection string, pooler URL, or direct DB host by mistake.
+  if (cleaned.includes('db.') && cleaned.includes('.supabase.co')) {
+    const match = cleaned.match(/db\.([a-zA-Z0-9\-]+)\.supabase\.co/);
+    if (match && match[1]) {
+      cleaned = `https://${match[1]}.supabase.co`;
+    }
+  }
+
+  // Strip trailing slashes first
+  cleaned = cleaned.replace(/\/+$/, '');
+
+  // Strip /rest/v1 if present at the end
+  if (cleaned.endsWith('/rest/v1')) {
+    cleaned = cleaned.substring(0, cleaned.length - 8);
+  }
+
+  return cleaned.replace(/\/+$/, '').trim();
 }
 
 // Initialize Supabase Client on Server Side (uses Service Role Key or Anon Key for write/read access)

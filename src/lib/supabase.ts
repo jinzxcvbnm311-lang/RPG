@@ -2,8 +2,29 @@ import { createClient } from '@supabase/supabase-js';
 
 function cleanEnvValue(val: string): string {
   if (!val) return '';
-  // Remove wrapping single/double quotes, trailing slashes, and leading/trailing spaces
-  return val.trim().replace(/^['"]|['"]$/g, '').replace(/\/$/, '').trim();
+  let cleaned = val.trim().replace(/^['"]|['"]$/g, '').trim();
+  
+  // Self-heal: Check if client pasted a DB connection string, pooler URL, or direct DB host by mistake.
+  // Examples: 
+  // - postgresql://postgres:pw@db.abcde.supabase.co:5432/postgres
+  // - db.abcde.supabase.co
+  if (cleaned.includes('db.') && cleaned.includes('.supabase.co')) {
+    const match = cleaned.match(/db\.([a-zA-Z0-9\-]+)\.supabase\.co/);
+    if (match && match[1]) {
+      cleaned = `https://${match[1]}.supabase.co`;
+    }
+  }
+
+  // Strip trailing slashes first
+  cleaned = cleaned.replace(/\/+$/, '');
+
+  // Strip /rest/v1 if present at the end (Supabase SDK automatically appends /rest/v1, 
+  // so if it's in the base URL, it will double-resolve to /rest/v1/rest/v1 resulting in Invalid Path)
+  if (cleaned.endsWith('/rest/v1')) {
+    cleaned = cleaned.substring(0, cleaned.length - 8);
+  }
+
+  return cleaned.replace(/\/+$/, '').trim();
 }
 
 const supabaseUrl = cleanEnvValue(((import.meta as any).env?.VITE_SUPABASE_URL) || '');
