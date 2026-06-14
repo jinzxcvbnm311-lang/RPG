@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Trophy, RefreshCw, Award, Target, Flame, ChevronRight, Swords } from 'lucide-react';
 import { Leaderboards, LeaderboardEntry } from '../types';
 import { motion } from 'motion/react';
+import { hasSupabaseConfig, getRankingsDirectFromSupabase } from '../lib/supabase';
 
 export default function LeaderboardView() {
   const [leaderboards, setLeaderboards] = useState<Leaderboards | null>(null);
@@ -13,9 +14,33 @@ export default function LeaderboardView() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('/api/game/rankings');
-      if (!res.ok) throw new Error('랭킹 데이터를 불러오지 못했습니다.');
-      const data = await res.json();
+      let data: any = null;
+
+      try {
+        const res = await fetch('/api/game/rankings');
+        
+        const textRes = await res.text();
+        if (textRes.trim().startsWith('<') || textRes.includes('The page c') || textRes.includes('not found')) {
+          throw new Error('Vercel Static Route Error');
+        }
+
+        if (!res.ok) throw new Error('랭킹 데이터를 불러오지 못했습니다.');
+        
+        data = JSON.parse(textRes);
+      } catch (backendError: any) {
+        if (hasSupabaseConfig) {
+          console.log('[Leaderboard] Backend rankings failed (Vercel static). Fetching from client-side Supabase...');
+          const directRankings = await getRankingsDirectFromSupabase();
+          if (directRankings) {
+            data = directRankings;
+          } else {
+            throw new Error('클라우드 데이터베이스에서 직접 랭킹을 로드하는데 실패했습니다.');
+          }
+        } else {
+          throw backendError;
+        }
+      }
+
       setLeaderboards(data);
     } catch (err: any) {
       setError(err.message || '서버와의 통신이 원활하지 않습니다.');

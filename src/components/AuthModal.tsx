@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { Shield, Eye, EyeOff, AlertTriangle, Key, Loader2, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  hasSupabaseConfig, 
+  registerDirectToSupabase, 
+  loginDirectToSupabase 
+} from '../lib/supabase';
 
 interface AuthModalProps {
   onAuthSuccess: (user: { userId: string; nickname: string; gameState: any }) => void;
@@ -39,20 +44,130 @@ export default function AuthModal({ onAuthSuccess, onClose }: AuthModalProps) {
       : { username, password };
 
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      let data: any = null;
+      let usedDirectSupabase = false;
 
-      const data = await response.json();
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
 
-      if (!response.ok) {
-        throw new Error(data.error || '인증 처리에 실패하였습니다.');
+        const textResponse = await response.text();
+
+        // Check if the response is actually an HTML error page (like Vercel's 404 block or other HTML page)
+        if (textResponse.trim().startsWith('<') || textResponse.includes('The page c') || textResponse.includes('not found')) {
+          throw new Error('Vercel Static Error/HTML response');
+        }
+
+        try {
+          data = JSON.parse(textResponse);
+        } catch (parseE) {
+          throw new Error('Server JSON parse error');
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || '인증 처리에 실패하였습니다.');
+        }
+
+      } catch (backendError: any) {
+        // If it was a real API bad request (e.g. invalid password, username taken), do NOT try client-side fallback — throw it!
+        const isNetworkOrStaticError = 
+          backendError.message.includes('Vercel Static Error') || 
+          backendError.message.includes('JSON parse error') || 
+          backendError.message.includes('Failed to fetch') || 
+          backendError.message.includes('Unexpected token') ||
+          backendError.message.includes('is not valid JSON');
+
+        if (!isNetworkOrStaticError) {
+          throw backendError;
+        }
+
+        // Try direct browser connection to Supabase if config is injected
+        if (hasSupabaseConfig) {
+          console.log('⚡ [Auth] Vercel static build detected. Routing authentication directly to Supabase client-side!');
+          usedDirectSupabase = true;
+
+          const trimmedUsername = username.trim().toLowerCase();
+          if (isRegister) {
+            const defaultState = {
+              userId: trimmedUsername,
+              nickname: nickname.trim(),
+              level: 1,
+              exp: 0,
+              nextExp: 20,
+              gold: 0,
+              rebirthPoints: 0,
+              rebirthCount: 0,
+              bossKills: 0,
+              hp: 100,
+              rebirthUpgrades: {
+                attackMultiplier: 0,
+                expMultiplier: 0,
+                dropMultiplier: 0,
+                goldMultiplier: 0
+              },
+              equippedItems: {
+                helmet: null,
+                armor: null,
+                pants: null,
+                shoes: null,
+                weapon: null
+              },
+              inventory: [],
+              upgradeStones: { t1: 0, t2: 0, t3: 0, t4: 0, t5: 0, t6: 0, t7: 0 },
+              skills: {
+                attackLevel: 0,
+                defenseLevel: 0,
+                criticalLevel: 0,
+                autoHuntLevel: 0,
+                dropLevel: 0
+              },
+              unlockedHuntingZones: ['초보자의 숲'],
+              currentHuntingZone: '초보자의 숲',
+              huntingZoneKills: 0,
+              achievements: {
+                slimeKills: 0,
+                demonLordKills: 0,
+                totalKills: 0,
+                totalClicks: 0,
+                totalGoldEarned: 0,
+                unlockedAchievements: []
+              }
+            };
+
+            const directRegResult = await registerDirectToSupabase(
+              username,
+              password,
+              nickname,
+              defaultState
+            );
+
+            if (!directRegResult.success) {
+              throw new Error(directRegResult.error);
+            }
+          } else {
+            const directLoginResult = await loginDirectToSupabase(username, password);
+            if (!directLoginResult.success || !directLoginResult.user) {
+              throw new Error(directLoginResult.error || '로그인 실패');
+            }
+            data = { user: directLoginResult.user };
+          }
+        } else {
+          // No config available either
+          throw new Error(
+            '인증 서버에 연결할 수 없습니다. Vercel 배포 시, Vercel 프로젝트 대시보드의 Environment Variables에 VITE_SUPABASE_URL와 VITE_SUPABASE_ANON_KEY 환경 변수를 등록해 주세요.'
+          );
+        }
       }
 
       if (isRegister) {
-        setSuccessText('계정이 생성되었습니다! 이제 로그인할 수 있습니다.');
+        setSuccessText(
+          usedDirectSupabase
+            ? '클라우드 계정이 정상적으로 생성되었습니다! 이제 로그인해보세요.'
+            : '계정이 생성되었습니다! 이제 로그인할 수 있습니다.'
+        );
         setIsRegister(false);
         setPassword('');
       } else {
@@ -60,7 +175,7 @@ export default function AuthModal({ onAuthSuccess, onClose }: AuthModalProps) {
         onClose();
       }
     } catch (err: any) {
-      setErrorText(err.message || '인증 서버와의 연결이 원활하지 않습니다.');
+      setErrorText(err.message || '인증 처리에 실패하였습니다.');
     } finally {
       setLoading(false);
     }

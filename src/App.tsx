@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { GameState, Equipment, SkillTree, RebirthUpgrades } from './types';
 import { ACHIEVEMENTS_LIST, HUNTING_ZONES, STONE_NAMES, RARITY_TABLE } from './data';
 import { calculateCalculatedStats } from './utils';
+import { hasSupabaseConfig, saveGameStateToSupabase } from './lib/supabase';
 import AuthModal from './components/AuthModal';
 import LeaderboardView from './components/LeaderboardView';
 import InventoryView from './components/InventoryView';
@@ -131,16 +132,41 @@ export default function App() {
     if (!user) return;
     setSavingStatus('saving');
     try {
-      const response = await fetch('/api/game/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: user.userId,
-          gameState: stateToSave
-        })
-      });
+      let saved = false;
 
-      if (!response.ok) throw new Error('Cloud save failed');
+      try {
+        const response = await fetch('/api/game/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.userId,
+            gameState: stateToSave
+          })
+        });
+
+        const textRes = await response.text();
+        if (textRes.trim().startsWith('<') || textRes.includes('The page c') || textRes.includes('not found')) {
+          throw new Error('Vercel Static Route Error');
+        }
+
+        if (!response.ok) throw new Error('Cloud save failed');
+        saved = true;
+      } catch (backendSaveError: any) {
+        // If the backend save failed because of static page error/network error, try fallback
+        if (hasSupabaseConfig) {
+          console.log('[Save] Falling back to direct client-side save on Supabase.');
+          const directSaveResult = await saveGameStateToSupabase(user.userId, user.nickname, stateToSave);
+          if (directSaveResult.success) {
+            saved = true;
+          } else {
+            throw new Error(directSaveResult.error || 'Direct save failed');
+          }
+        } else {
+          throw backendSaveError;
+        }
+      }
+
+      if (!saved) throw new Error('Could not save data anywhere');
 
       setSavingStatus('done');
       setTimeout(() => setSavingStatus('idle'), 2000);
