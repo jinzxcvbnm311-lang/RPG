@@ -2,13 +2,36 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
 import { createServer as createViteServer } from 'vite';
+
+// Load .env variables
+dotenv.config();
 
 // Enforce port 3000 as specified in container limits
 const PORT = 3000;
 const app = express();
 
 app.use(express.json());
+
+// Initialize Supabase Client on Server Side (uses Service Role Key or Anon Key for write/read access)
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+const serverSupabase = (supabaseUrl && supabaseServiceKey)
+  ? createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        persistSession: false
+      }
+    })
+  : null;
+
+if (serverSupabase) {
+  console.log('⚡ [Endless Hunter] Supabase Cloud Database active on Server!');
+} else {
+  console.log('📂 [Endless Hunter] Offline Local JSON database mode active on Server.');
+}
 
 // Ensure persistent directory exists
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -57,7 +80,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // 2. Register
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password, nickname } = req.body;
 
@@ -66,13 +89,6 @@ app.post('/api/auth/register', (req, res) => {
     }
 
     const trimmedUsername = username.trim().toLowerCase();
-    const db = loadUsersDB();
-
-    if (db[trimmedUsername]) {
-      return res.status(400).json({ error: '이미 존재하는 아이디입니다.' });
-    }
-
-    // Hashpassword
     const passwordHash = hashPassword(password);
 
     // Initial default game state
@@ -121,14 +137,51 @@ app.post('/api/auth/register', (req, res) => {
       }
     };
 
-    db[trimmedUsername] = {
-      username: trimmedUsername,
-      passwordHash,
-      createdAt: new Date().toISOString(),
-      gameState: defaultState
-    };
+    if (serverSupabase) {
+      // 1. Supabase Cloud Flow
+      const { data: existingUser, error: checkError } = await serverSupabase
+        .from('user_profiles')
+        .select('user_id')
+        .eq('user_id', trimmedUsername)
+        .maybeSingle();
 
-    saveUsersDB(db);
+      if (checkError) {
+        throw new Error('Supabase 검증 실패: ' + checkError.message);
+      }
+
+      if (existingUser) {
+        return res.status(400).json({ error: '이미 존재하는 아이디입니다.' });
+      }
+
+      const { error: insertError } = await serverSupabase
+        .from('user_profiles')
+        .insert({
+          user_id: trimmedUsername,
+          nickname: nickname.trim(),
+          password_hash: passwordHash,
+          game_state: defaultState,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (insertError) {
+        throw new Error('Supabase 가입 오류: ' + insertError.message);
+      }
+    } else {
+      // 2. Offline Fallback JSON Flow
+      const db = loadUsersDB();
+      if (db[trimmedUsername]) {
+        return res.status(400).json({ error: '이미 존재하는 아이디입니다.' });
+      }
+
+      db[trimmedUsername] = {
+        username: trimmedUsername,
+        passwordHash,
+        createdAt: new Date().toISOString(),
+        gameState: defaultState
+      };
+      saveUsersDB(db);
+    }
 
     res.status(201).json({
       message: '회원가입 완료 및 계정이 생성되었습니다.',
@@ -144,7 +197,7 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 // 3. Login
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -153,24 +206,55 @@ app.post('/api/auth/login', (req, res) => {
     }
 
     const trimmedUsername = username.trim().toLowerCase();
-    const db = loadUsersDB();
-    const user = db[trimmedUsername];
-
-    if (!user) {
-      return res.status(401).json({ error: '존재하지 않는 아이디입니다.' });
-    }
-
+    let checkedNickname = '';
+    let checkedGameState: any = null;
     const checkHash = hashPassword(password);
-    if (user.passwordHash !== checkHash) {
-      return res.status(401).json({ error: '비밀번호가 올바르지 않습니다.' });
+
+    if (serverSupabase) {
+      // Supabase Active Flow
+      const { data: user, error: loginError } = await serverSupabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', trimmedUsername)
+        .maybeSingle();
+
+      if (loginError) {
+        throw new Error('Cloud DB 조회 실패: ' + loginError.message);
+      }
+
+      if (!user) {
+        return res.status(401).json({ error: '존재하지 않는 아이디입니다.' });
+      }
+
+      if (user.password_hash !== checkHash) {
+        return res.status(401).json({ error: '비밀번호가 올바르지 않습니다.' });
+      }
+
+      checkedNickname = user.nickname;
+      checkedGameState = user.game_state;
+    } else {
+      // Local JSON File Fallback
+      const db = loadUsersDB();
+      const user = db[trimmedUsername];
+
+      if (!user) {
+        return res.status(401).json({ error: '존재하지 않는 아이디입니다.' });
+      }
+
+      if (user.passwordHash !== checkHash) {
+        return res.status(401).json({ error: '비밀번호가 올바르지 않습니다.' });
+      }
+
+      checkedNickname = user.gameState.nickname;
+      checkedGameState = user.gameState;
     }
 
     res.json({
       message: '성공적으로 로그인하였습니다.',
       user: {
-        userId: user.username,
-        nickname: user.gameState.nickname,
-        gameState: user.gameState
+        userId: trimmedUsername,
+        nickname: checkedNickname,
+        gameState: checkedGameState
       }
     });
   } catch (error: any) {
@@ -179,7 +263,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // 4. Save Progress
-app.post('/api/game/save', (req, res) => {
+app.post('/api/game/save', async (req, res) => {
   try {
     const { userId, gameState } = req.body;
 
@@ -188,16 +272,47 @@ app.post('/api/game/save', (req, res) => {
     }
 
     const trimmedUserId = userId.trim().toLowerCase();
-    const db = loadUsersDB();
 
-    if (!db[trimmedUserId]) {
-      return res.status(404).json({ error: '해당 사용자 계정을 찾을 수 없습니다.' });
+    if (serverSupabase) {
+      // Supabase Active Flow
+      const { data: existing, error: findError } = await serverSupabase
+        .from('user_profiles')
+        .select('user_id')
+        .eq('user_id', trimmedUserId)
+        .maybeSingle();
+
+      if (findError) {
+        throw new Error('Supabase 연동 실패: ' + findError.message);
+      }
+
+      if (!existing) {
+        return res.status(404).json({ error: '해당 사용자 계정을 클라우드에서 찾을 수 없습니다.' });
+      }
+
+      const { error: updateError } = await serverSupabase
+        .from('user_profiles')
+        .update({
+          game_state: gameState,
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', trimmedUserId);
+
+      if (updateError) {
+        throw new Error('Supabase 저장 실패: ' + updateError.message);
+      }
+    } else {
+      // Local JSON File Fallback
+      const db = loadUsersDB();
+
+      if (!db[trimmedUserId]) {
+        return res.status(404).json({ error: '해당 사용자 계정을 찾을 수 없습니다.' });
+      }
+
+      // Save state
+      db[trimmedUserId].gameState = gameState;
+      db[trimmedUserId].updatedAt = new Date().toISOString();
+      saveUsersDB(db);
     }
-
-    // Save state
-    db[trimmedUserId].gameState = gameState;
-    db[trimmedUserId].updatedAt = new Date().toISOString();
-    saveUsersDB(db);
 
     res.json({ message: '게임 진행 상황이 클라우드에 성공적으로 백업되었습니다.' });
   } catch (error: any) {
@@ -207,9 +322,10 @@ app.post('/api/game/save', (req, res) => {
 
 // Helper calculation to obtain a user's calculated max attack power for leaderboard rankings
 function calculateMaxAttack(gameState: any): number {
-  let baseAttack = 10 + (gameState.level - 1) * 2;
-  if (gameState.level >= 100) {
-    baseAttack += (gameState.level - 99) * 4; // bonus scaling past 100
+  if (!gameState) return 10;
+  let baseAttack = 10 + ((gameState.level || 1) - 1) * 2;
+  if ((gameState.level || 1) >= 100) {
+    baseAttack += ((gameState.level || 1) - 99) * 4; // bonus scaling past 100
   }
 
   // Skill bonus
@@ -264,20 +380,46 @@ function calculateMaxAttack(gameState: any): number {
 }
 
 // 5. Global Leaderboards
-app.get('/api/game/rankings', (req, res) => {
+app.get('/api/game/rankings', async (req, res) => {
   try {
-    const db = loadUsersDB();
-    const usersList = Object.values(db).map((u: any) => {
-      const gs = u.gameState;
-      return {
-        userId: gs.userId,
-        nickname: gs.nickname,
-        level: gs.level || 1,
-        rebirthCount: gs.rebirthCount || 0,
-        bossKills: gs.bossKills || 0,
-        maxAttack: calculateMaxAttack(gs)
-      };
-    });
+    let usersList: any[] = [];
+
+    if (serverSupabase) {
+      // Supabase Active Flow
+      const { data: profiles, error: selectError } = await serverSupabase
+        .from('user_profiles')
+        .select('user_id, nickname, game_state');
+
+      if (selectError) {
+        throw new Error('Supabase 랭킹 조회 실패: ' + selectError.message);
+      }
+
+      usersList = (profiles || []).map((u: any) => {
+        const gs = u.game_state;
+        return {
+          userId: u.user_id,
+          nickname: u.nickname || gs?.nickname || 'Unknown',
+          level: gs?.level || 1,
+          rebirthCount: gs?.rebirthCount || 0,
+          bossKills: gs?.bossKills || 0,
+          maxAttack: calculateMaxAttack(gs)
+        };
+      });
+    } else {
+      // Offline Local JSON database mode
+      const db = loadUsersDB();
+      usersList = Object.values(db).map((u: any) => {
+        const gs = u.gameState;
+        return {
+          userId: gs.userId,
+          nickname: gs.nickname,
+          level: gs.level || 1,
+          rebirthCount: gs.rebirthCount || 0,
+          bossKills: gs.bossKills || 0,
+          maxAttack: calculateMaxAttack(gs)
+        };
+      });
+    }
 
     // 1. Level rankings
     const levelRank = [...usersList]
