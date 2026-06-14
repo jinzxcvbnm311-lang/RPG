@@ -15,9 +15,14 @@ const app = express();
 
 app.use(express.json());
 
+function cleanEnvValue(val: string): string {
+  if (!val) return '';
+  return val.trim().replace(/^['"]|['"]$/g, '').replace(/\/$/, '').trim();
+}
+
 // Initialize Supabase Client on Server Side (uses Service Role Key or Anon Key for write/read access)
-const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = cleanEnvValue(process.env.VITE_SUPABASE_URL || '');
+const supabaseServiceKey = cleanEnvValue(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '');
 
 const serverSupabase = (supabaseUrl && supabaseServiceKey)
   ? createClient(supabaseUrl, supabaseServiceKey, {

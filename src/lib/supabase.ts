@@ -1,7 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = ((import.meta as any).env?.VITE_SUPABASE_URL) || '';
-const supabaseAnonKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY) || '';
+function cleanEnvValue(val: string): string {
+  if (!val) return '';
+  // Remove wrapping single/double quotes, trailing slashes, and leading/trailing spaces
+  return val.trim().replace(/^['"]|['"]$/g, '').replace(/\/$/, '').trim();
+}
+
+const supabaseUrl = cleanEnvValue(((import.meta as any).env?.VITE_SUPABASE_URL) || '');
+const supabaseAnonKey = cleanEnvValue(((import.meta as any).env?.VITE_SUPABASE_ANON_KEY) || '');
 
 // Safely initialize the client. If URL or Key is missing, it will log a warning.
 export const hasSupabaseConfig = !!(supabaseUrl && supabaseAnonKey);
